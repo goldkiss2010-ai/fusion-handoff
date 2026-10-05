@@ -34,6 +34,8 @@ Fuses/FusionHandoff.fuse
 
 No Python runtime is required to play an existing FLD1 cache.
 
+For testing, the host-independent [FLD1 Asset Pack v01](https://github.com/goldkiss2010-ai/ae-handoff/releases/download/v1.15-preview.1/FLD1_Asset_Pack_v01.zip) contains five 20K fields and a 1M-particle Vortex Ring. The same files are usable by AE Handoff and Fusion Handoff.
+
 ## Architecture
 
 ```text
