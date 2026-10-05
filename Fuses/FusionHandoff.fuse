@@ -61,6 +61,15 @@ local function get_optional_image(input, req)
     return value
 end
 
+local function get_optional_source(input, time)
+    if not input then return nil end
+    local ok, value = pcall(function()
+        return input:GetSource(time)
+    end)
+    if not ok then return nil end
+    return value
+end
+
 local function pass_density(particle_id, density)
     density = clamp(density, 0.0, 1.0)
     if density >= 0.999999 then return true end
@@ -814,7 +823,10 @@ function Create()
         LINK_Main = 2,
         INP_Required = false,
         INP_AcceptsDoD = false,
-        INP_SendRequest = true,
+        -- Do not let an optional mask branch participate in Fusion's automatic
+        -- pre-Process request. Process() pulls it explicitly only when Mask Gate
+        -- is enabled.
+        INP_SendRequest = false,
         INP_ForceNotify = true,
     })
 
@@ -940,7 +952,6 @@ function Process(req)
     local source_image = get_optional_image(InSourceImage, req)
     local sprite_source = wants_sprite and source_image or nil
     local image_source = wants_image_dots and source_image or nil
-    local mask_source = get_optional_image(InMaskSource, req)
 
     -- Do not silently fall back to ordinary dots when an image-driven mode
     -- has no source. A missing/wrong connection should be visually obvious.
@@ -951,6 +962,7 @@ function Process(req)
 
     local sprite_size = clamp(get_number(InSpriteSize, req, 12.0), 1.0, 64.0)
     local mask_gate = math.floor(get_number(InMaskGate, req, 0.0) + 0.5) == 1
+    local mask_source = mask_gate and get_optional_source(InMaskSource, req.Time) or nil
     local mask_threshold = clamp(get_number(InMaskThreshold, req, 5.0) / 100.0, 0.0, 1.0)
     local mask_invert = get_number(InMaskInvert, req, 0.0) >= 0.5
 
