@@ -61,14 +61,6 @@ local function get_optional_image(input, req)
     return value
 end
 
-local function get_optional_source(input, time)
-    if not input then return nil end
-    local ok, value = pcall(function()
-        return input:GetSource(time)
-    end)
-    if not ok then return nil end
-    return value
-end
 
 local function pass_density(particle_id, density)
     density = clamp(density, 0.0, 1.0)
@@ -818,39 +810,11 @@ function Create()
         INP_SendRequest = true,
         INP_ForceNotify = true,
     })
-    InMaskSource = self:AddInput("Particle Mask Image", "MaskSource", {
-        LINKID_DataType = "Image",
-        -- Deliberately not a LINK_Main input. Source Image is the only main
-        -- image branch; this mask is an auxiliary branch requested only when
-        -- Mask Gate is enabled.
-        INP_Required = false,
-        INP_AcceptsDoD = false,
-        -- Do not let an optional mask branch participate in Fusion's automatic
-        -- pre-Process request. Process() pulls it explicitly only when Mask Gate
-        -- is enabled.
-        INP_SendRequest = false,
-        INP_ForceNotify = true,
-    })
 
     InSpriteSize = self:AddInput("Sprite Size", "SpriteSize", {
         LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
         INP_Default = 12.0, INP_MinScale = 1.0, INP_MaxScale = 32.0,
         INP_MinAllowed = 1.0, INP_MaxAllowed = 64.0,
-    })
-    InMaskGate = self:AddInput("Mask Gate", "MaskGate", {
-        LINKID_DataType = "Number", INPID_InputControl = "ComboControl",
-        INP_Default = 0, INP_Integer = true,
-        { CCS_AddString = "Off" },
-        { CCS_AddString = "Frame 0 XY" },
-    })
-    InMaskThreshold = self:AddInput("Mask Threshold", "MaskThreshold", {
-        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
-        INP_Default = 5.0, INP_MinScale = 0.0, INP_MaxScale = 100.0,
-        INP_MinAllowed = 0.0, INP_MaxAllowed = 100.0,
-    })
-    InMaskInvert = self:AddInput("Mask Invert", "MaskInvert", {
-        LINKID_DataType = "Number", INPID_InputControl = "CheckboxControl",
-        INP_Default = 0, INP_Integer = true,
     })
 end
 
@@ -963,10 +927,6 @@ function Process(req)
     end
 
     local sprite_size = clamp(get_number(InSpriteSize, req, 12.0), 1.0, 64.0)
-    local mask_gate = math.floor(get_number(InMaskGate, req, 0.0) + 0.5) == 1
-    local mask_source = mask_gate and get_optional_source(InMaskSource, req.Time) or nil
-    local mask_threshold = clamp(get_number(InMaskThreshold, req, 5.0) / 100.0, 0.0, 1.0)
-    local mask_invert = get_number(InMaskInvert, req, 0.0) >= 0.5
 
     local split_mode = math.floor(get_number(InDepthSplit, req, 0.0) + 0.5)
     local focus_camera_z = nil
@@ -989,18 +949,6 @@ function Process(req)
             local x, y, z, vx, vy, vz, visibility = hermite_state(a, b, t)
 
             local ref_u, ref_v, has_ref_uv = reference_uv(i)
-            local mask_alpha = 1.0
-
-            if mask_gate and mask_source and has_ref_uv then
-                local _, _, _, ma, ok = sample_image_rgba(mask_source, ref_u, ref_v, sample_pixel)
-                if ok then
-                    mask_alpha = clamp(ma, 0.0, 1.0)
-                    if mask_invert then mask_alpha = 1.0 - mask_alpha end
-                    if mask_alpha < mask_threshold then
-                        visibility = 0.0
-                    end
-                end
-            end
 
             local draw_r = base_r
             local draw_g = base_g
@@ -1017,7 +965,7 @@ function Process(req)
                 end
             end
 
-            visibility = clamp(visibility * mask_alpha * image_alpha, 0.0, 1.0)
+            visibility = clamp(visibility * image_alpha, 0.0, 1.0)
 
             if visibility > 0.01 and particle_opacity > 0.0 then
                 local screen_x, screen_y, pf, camera_z = project_world_point(x, y, z, view)
