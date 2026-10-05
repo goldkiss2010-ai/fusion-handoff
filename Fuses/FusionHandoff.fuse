@@ -781,17 +781,7 @@ function Create()
         { CCS_AddString = "Front" },
         { CCS_AddString = "Back" },
     })
-    InFocusX = self:AddInput("Focus Position X", "FocusX", {
-        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
-        INP_Default = 0.0, INP_MinScale = -20.0, INP_MaxScale = 20.0,
-        INP_MinAllowed = -1000.0, INP_MaxAllowed = 1000.0,
-    })
-    InFocusY = self:AddInput("Focus Position Y", "FocusY", {
-        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
-        INP_Default = 0.0, INP_MinScale = -20.0, INP_MaxScale = 20.0,
-        INP_MinAllowed = -1000.0, INP_MaxAllowed = 1000.0,
-    })
-    InFocusZ = self:AddInput("Focus Position Z", "FocusZ", {
+    InFocusDepth = self:AddInput("Focus Depth", "FocusDepth", {
         LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
         INP_Default = 0.0, INP_MinScale = -20.0, INP_MaxScale = 20.0,
         INP_MinAllowed = -1000.0, INP_MaxAllowed = 1000.0,
@@ -929,13 +919,11 @@ function Process(req)
     local sprite_size = clamp(get_number(InSpriteSize, req, 12.0), 1.0, 64.0)
 
     local split_mode = math.floor(get_number(InDepthSplit, req, 0.0) + 0.5)
+    -- Focus Depth is camera-space Z. The split plane is always parallel to
+    -- the image/sensor plane; only its distance along the viewing axis moves.
     local focus_camera_z = nil
     if split_mode ~= 0 then
-        local fx = get_number(InFocusX, req, 0.0)
-        local fy = get_number(InFocusY, req, 0.0)
-        local fz = get_number(InFocusZ, req, 0.0)
-        local _, _, focus_world_z = transform_world_point(fx, fy, fz, view)
-        focus_camera_z = focus_world_z - view.dolly
+        focus_camera_z = get_number(InFocusDepth, req, 0.0)
     end
 
     local scratch = Pixel({ R = 0.0, G = 0.0, B = 0.0, A = 0.0 })
