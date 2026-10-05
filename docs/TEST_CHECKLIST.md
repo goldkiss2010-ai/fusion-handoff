@@ -68,8 +68,8 @@ Run this after replacing the Fuse. For changes to `FuRegisterClass(...)`, fully 
 - [ ] Set View Depth Split = Back and verify the complementary side remains.
 - [ ] Front + Back in two Fusion Handoff nodes reconstructs the full field when composited together.
 - [ ] Put a 2D image/text layer between Back and Front; particles visibly pass behind and in front of it.
-- [ ] Rotate the particle view: the split plane follows the current view automatically.
-- [ ] Animate Focus Position Z and verify the split plane moves through the field.
+- [ ] Rotate the particle/object view: the split plane remains parallel to the image/sensor plane.
+- [ ] Animate Focus Depth and verify the plane moves only along the viewing axis.
 
 ## H. Scale test
 
