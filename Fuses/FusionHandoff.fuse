@@ -799,10 +799,22 @@ function Create()
     -- one image connector. LINK_Main only controls Fusion's auto-connect
     -- priority; keeping one presentation source avoids ambiguous flow wiring.
     InSourceImage = self:AddInput("Source Image", "SourceImage", {
-        LINKID_DataType = "Image", LINK_Main = 1, INP_Required = false,
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+        INP_Required = false,
+        -- We sample arbitrary UVs across the whole source image, so a partial
+        -- DoD/ROI request is not sufficient.
+        INP_AcceptsDoD = false,
+        INP_SendRequest = true,
+        INP_ForceNotify = true,
     })
     InMaskSource = self:AddInput("Mask Source", "MaskSource", {
-        LINKID_DataType = "Image", LINK_Main = 2, INP_Required = false,
+        LINKID_DataType = "Image",
+        LINK_Main = 2,
+        INP_Required = false,
+        INP_AcceptsDoD = false,
+        INP_SendRequest = true,
+        INP_ForceNotify = true,
     })
 
     InSpriteSize = self:AddInput("Sprite Size", "SpriteSize", {
