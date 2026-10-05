@@ -26,7 +26,7 @@ This repository is intentionally a thin host adapter. It may later be merged wit
 
 The Fuse is still experimental. The first priority is semantic correctness and cross-DCC behavior; optimization comes after the feature path is verified.
 
-Fusion Handoff remains a `CT_SourceTool` because FLD1 owns the generated output frame and Fusion supplies the source-style frame-format controls. Sprite/Image Dots and Mask Gate are optional upstream image branches; the Fuse marks each branch required only while the corresponding mode is active so Fusion schedules the dependency explicitly.
+Fusion Handoff remains a `CT_SourceTool` because FLD1 owns the generated output frame and Fusion supplies the source-style frame-format controls. Sprite and Image Dots share one optional upstream `Source Image` branch.
 
 ## Install
 
@@ -34,7 +34,7 @@ Copy `Fuses/FusionHandoff.fuse` into a Fusion/Resolve Fuse search directory, the
 
 Add **Fusion Handoff** from `Fuses > FLD1`, select an `.fld1` cache, and view the node or connect it downstream.
 
-For image-driven modes, connect exactly one image to `Source Image`: `Render Mode = Sprite` stamps that image at every particle, while `Render Mode = Image Dots` samples its color/alpha using stable frame-0 XY particle mapping. `Mask Source` is a separate optional input used only by `Mask Gate`. Image-driven modes intentionally render transparent when `Source Image` is missing, so a wrong connection is not silently mistaken for ordinary dots.
+For image-driven modes, connect exactly one image to `Source Image`: `Render Mode = Sprite` stamps that image at every particle, while `Render Mode = Image Dots` samples its color/alpha using stable frame-0 XY particle mapping. There is no separate particle-mask image branch; masking can be handled elsewhere in the Fusion flow. Image-driven modes intentionally render transparent when `Source Image` is missing, so a wrong connection is not silently mistaken for ordinary dots.
 
 ## FLD1 time contract
 
