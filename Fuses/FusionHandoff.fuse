@@ -628,7 +628,6 @@ function Create()
         INPID_InputControl = "ComboControl",
         INP_Default = 0,
         INP_Integer = true,
-        INP_DoNotifyChanged = true,
         { CCS_AddString = "Dot" },
         { CCS_AddString = "Sprite" },
         { CCS_AddString = "Image Dots" },
@@ -808,8 +807,6 @@ function Create()
         INP_AcceptsDoD = false,
         INP_SendRequest = true,
         INP_ForceNotify = true,
-        INP_Active = true,
-        INP_Priority = 1,
     })
     InMaskSource = self:AddInput("Mask Source", "MaskSource", {
         LINKID_DataType = "Image",
@@ -818,8 +815,6 @@ function Create()
         INP_AcceptsDoD = false,
         INP_SendRequest = true,
         INP_ForceNotify = true,
-        INP_Active = true,
-        INP_Priority = 2,
     })
 
     InSpriteSize = self:AddInput("Sprite Size", "SpriteSize", {
@@ -830,7 +825,6 @@ function Create()
     InMaskGate = self:AddInput("Mask Gate", "MaskGate", {
         LINKID_DataType = "Number", INPID_InputControl = "ComboControl",
         INP_Default = 0, INP_Integer = true,
-        INP_DoNotifyChanged = true,
         { CCS_AddString = "Off" },
         { CCS_AddString = "Frame 0 XY" },
     })
@@ -843,22 +837,6 @@ function Create()
         LINKID_DataType = "Number", INPID_InputControl = "CheckboxControl",
         INP_Default = 0, INP_Integer = true,
     })
-end
-
-
-function NotifyChanged(inp, param, time)
-    -- CT_SourceTool is retained because FLD1 is the primary source and it owns
-    -- the output frame format. Make optional image branches required only while
-    -- their corresponding presentation mode actually needs them. This gives
-    -- Fusion an explicit dependency instead of relying on an optional source
-    -- input to wake up after a second image branch is connected.
-    if inp == InRenderMode then
-        local mode = tonumber(param and param.Value) or 0
-        InSourceImage:SetAttrs({ INP_Required = (mode == 1 or mode == 2) })
-    elseif inp == InMaskGate then
-        local gate = tonumber(param and param.Value) or 0
-        InMaskSource:SetAttrs({ INP_Required = (gate == 1) })
-    end
 end
 
 function Process(req)
