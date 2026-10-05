@@ -66,15 +66,14 @@ through the same object/view/projection path as the particle. The reference stre
 
 At full particle opacity, Dot/Streak rendering uses channel-wise max behavior. Below full opacity, use premultiplied source-over.
 
-## 6. Image Dots and Mask Gate
+## 6. Image Dots
 
-Image Dots and Mask Gate use stable frame-0 XY mapping, not current-frame XY. This keeps particle/image membership stable while the particle field moves.
+Image Dots uses stable frame-0 XY mapping, not current-frame XY. This keeps particle/image membership stable while the particle field moves.
 
 Frame-0 XY is normalized over the frame-0 XY bounds. Each host adapter converts normalized V to its own image-coordinate convention.
 
 Image Dots samples RGBA from the image. Sampled RGB becomes particle color and sampled alpha multiplies visibility.
 
-Mask Gate samples alpha. Invert is applied before thresholding. Passing mask alpha also multiplies visibility.
 
 ## 7. View Depth Split
 
