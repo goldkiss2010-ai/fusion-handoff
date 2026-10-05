@@ -820,7 +820,9 @@ function Create()
     })
     InMaskSource = self:AddInput("Particle Mask Image", "MaskSource", {
         LINKID_DataType = "Image",
-        LINK_Main = 2,
+        -- Deliberately not a LINK_Main input. Source Image is the only main
+        -- image branch; this mask is an auxiliary branch requested only when
+        -- Mask Gate is enabled.
         INP_Required = false,
         INP_AcceptsDoD = false,
         -- Do not let an optional mask branch participate in Fusion's automatic
