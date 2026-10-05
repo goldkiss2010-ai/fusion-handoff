@@ -795,14 +795,14 @@ function Create()
         INP_MinAllowed = -1000.0, INP_MaxAllowed = 1000.0,
     })
 
-    InSpriteSource = self:AddInput("Sprite Source", "SpriteSource", {
+    -- Sprite and Image Dots are mutually exclusive render modes, so they share
+    -- one image connector. LINK_Main only controls Fusion's auto-connect
+    -- priority; keeping one presentation source avoids ambiguous flow wiring.
+    InSourceImage = self:AddInput("Source Image", "SourceImage", {
         LINKID_DataType = "Image", LINK_Main = 1, INP_Required = false,
     })
-    InImageSource = self:AddInput("Image Source", "ImageSource", {
-        LINKID_DataType = "Image", LINK_Main = 2, INP_Required = false,
-    })
     InMaskSource = self:AddInput("Mask Source", "MaskSource", {
-        LINKID_DataType = "Image", LINK_Main = 3, INP_Required = false,
+        LINKID_DataType = "Image", LINK_Main = 2, INP_Required = false,
     })
 
     InSpriteSize = self:AddInput("Sprite Size", "SpriteSize", {
@@ -924,9 +924,17 @@ function Process(req)
     local wants_sprite = render_mode == 1
     local wants_image_dots = render_mode == 2
 
-    local sprite_source = get_optional_image(InSpriteSource, req)
-    local image_source = get_optional_image(InImageSource, req)
+    local source_image = get_optional_image(InSourceImage, req)
+    local sprite_source = wants_sprite and source_image or nil
+    local image_source = wants_image_dots and source_image or nil
     local mask_source = get_optional_image(InMaskSource, req)
+
+    -- Do not silently fall back to ordinary dots when an image-driven mode
+    -- has no source. A missing/wrong connection should be visually obvious.
+    if (wants_sprite or wants_image_dots) and not source_image then
+        OutImage:Set(req, img)
+        return
+    end
 
     local sprite_size = clamp(get_number(InSpriteSize, req, 12.0), 1.0, 64.0)
     local mask_gate = math.floor(get_number(InMaskGate, req, 0.0) + 0.5) == 1
