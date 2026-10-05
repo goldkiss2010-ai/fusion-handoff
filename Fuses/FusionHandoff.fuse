@@ -10,12 +10,17 @@
 -- This Fuse intentionally keeps the host adapter in one deployable file.
 -- Host-independent semantics are documented separately in docs/RENDERER_CONTRACT.md.
 
-FuRegisterClass("FusionHandoff", CT_SourceTool, {
+FuRegisterClass("FusionHandoff", CT_Tool, {
     REGS_Name = "Fusion Handoff",
     REGS_Category = "Fuses\\FLD1",
     REGS_OpIconString = "FH",
     REGS_OpDescription = "FLD1 particle state renderer",
 
+    -- This tool generates its own RGBA output, but it also consumes optional
+    -- image inputs. Register as a normal Tool so Fusion's dependency scheduler
+    -- treats Source Image / Mask Source as real upstream branches.
+    REG_OpNoMask = true,
+    REG_NoBlendCtrls = true,
     REG_NoObjMatCtrls = true,
     REG_NoMotionBlurCtrls = true,
 
