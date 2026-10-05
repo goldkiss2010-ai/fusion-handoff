@@ -1,0 +1,1061 @@
+-- Fusion Handoff
+-- FLD1 particle-state renderer for Blackmagic Fusion / DaVinci Resolve.
+--
+-- Design rule:
+--   FLD1 owns state. Fusion owns observation and presentation.
+--
+-- FLD1 v1 base profile per particle:
+--   x y z vx vy vz visibility scalar0
+--
+-- This Fuse intentionally keeps the host adapter in one deployable file.
+-- Host-independent semantics are documented separately in docs/RENDERER_CONTRACT.md.
+
+FuRegisterClass("FusionHandoff", CT_SourceTool, {
+    REGS_Name = "Fusion Handoff",
+    REGS_Category = "Fuses\\FLD1",
+    REGS_OpIconString = "FH",
+    REGS_OpDescription = "FLD1 particle state renderer",
+
+    REG_NoObjMatCtrls = true,
+    REG_NoMotionBlurCtrls = true,
+
+    REG_Source_GlobalCtrls = true,
+    REG_Source_SizeCtrls = true,
+    REG_Source_AspectCtrls = true,
+    REG_Source_DepthCtrls = true,
+
+    REG_TimeVariant = true,
+    REG_Unpredictable = true,
+})
+
+local K_PI = 3.14159265358979323846
+local K_CAMERA_DISTANCE = 10.0
+local K_HEADER_BYTES = 32
+local K_MAX_PARTICLES = 3000000
+
+local function clamp(v, lo, hi)
+    if v < lo then return lo end
+    if v > hi then return hi end
+    return v
+end
+
+local function round_int(v)
+    if v >= 0.0 then return math.floor(v + 0.5) end
+    return math.ceil(v - 0.5)
+end
+
+local function get_number(input, req, fallback)
+    if not input then return fallback end
+    local value = input:GetValue(req)
+    if not value then return fallback end
+    return tonumber(value.Value) or fallback
+end
+
+local function get_optional_image(input, req)
+    if not input then return nil end
+    local ok, value = pcall(function()
+        return input:GetValue(req)
+    end)
+    if not ok then return nil end
+    return value
+end
+
+local function pass_density(particle_id, density)
+    density = clamp(density, 0.0, 1.0)
+    if density >= 0.999999 then return true end
+    if density <= 0.0 then return false end
+    local unit = (particle_id * 0.6180339887498949) % 1.0
+    return unit < density
+end
+
+local function u32le(s, o)
+    local b1, b2, b3, b4 = string.byte(s, o, o + 3)
+    if not b4 then return nil end
+    return b1 + b2 * 256 + b3 * 65536 + b4 * 16777216
+end
+
+local function f64le(s, o)
+    local b1, b2, b3, b4, b5, b6, b7, b8 = string.byte(s, o, o + 7)
+    if not b8 then return nil end
+
+    local sign = (b8 >= 128) and -1 or 1
+    local exponent = (b8 % 128) * 16 + math.floor(b7 / 16)
+    local fraction =
+        (b7 % 16) * 281474976710656 +
+        b6 * 1099511627776 +
+        b5 * 4294967296 +
+        b4 * 16777216 +
+        b3 * 65536 +
+        b2 * 256 +
+        b1
+
+    if exponent == 0 then
+        if fraction == 0 then return 0.0 end
+        return sign * (fraction / 4503599627370496) * (2 ^ -1022)
+    elseif exponent == 2047 then
+        return nil
+    end
+
+    return sign * (1.0 + fraction / 4503599627370496) * (2 ^ (exponent - 1023))
+end
+
+local function f32le(s, o)
+    local b1, b2, b3, b4 = string.byte(s, o, o + 3)
+    if not b4 then return nil end
+
+    local u = b1 + b2 * 256 + b3 * 65536 + b4 * 16777216
+    local sign = (u >= 2147483648) and -1 or 1
+    local exponent = math.floor(u / 8388608) % 256
+    local mantissa = u % 8388608
+
+    if exponent == 0 then
+        if mantissa == 0 then return 0.0 end
+        return sign * (mantissa / 8388608) * (2 ^ -126)
+    elseif exponent == 255 then
+        return nil
+    end
+
+    return sign * (1.0 + mantissa / 8388608) * (2 ^ (exponent - 127))
+end
+
+local function parse_header(data)
+    if not data or #data < K_HEADER_BYTES then
+        return nil, "FLD1 header is not 32 bytes"
+    end
+
+    local header = {
+        magic          = data:sub(1, 4),
+        version        = u32le(data, 5),
+        particle_count = u32le(data, 9),
+        frame_count    = u32le(data, 13),
+        sample_rate    = f64le(data, 17),
+        stride_floats  = u32le(data, 25),
+        reserved       = u32le(data, 29),
+    }
+
+    if header.magic ~= "FLD1" then
+        return nil, "Not an FLD1 file"
+    end
+    if header.version ~= 1 then
+        return nil, "Unsupported FLD1 version: " .. tostring(header.version)
+    end
+    if not header.particle_count or header.particle_count < 1 then
+        return nil, "FLD1 contains no particles"
+    end
+    if header.particle_count > K_MAX_PARTICLES then
+        return nil, "FLD1 particle count exceeds Fuse safety limit"
+    end
+    if not header.frame_count or header.frame_count < 1 then
+        return nil, "FLD1 contains no samples"
+    end
+    if not header.stride_floats or header.stride_floats < 8 then
+        return nil, "Invalid FLD1 stride: " .. tostring(header.stride_floats)
+    end
+
+    header.stride_bytes = header.stride_floats * 4
+    header.sample_bytes = header.particle_count * header.stride_bytes
+    return header, nil
+end
+
+local function read_header(path)
+    local f, err = io.open(path, "rb")
+    if not f then
+        return nil, "Cannot open file: " .. tostring(err)
+    end
+    local data = f:read(K_HEADER_BYTES)
+    f:close()
+    return parse_header(data)
+end
+
+local function read_sample(path, header, sample_index)
+    if sample_index < 0 or sample_index >= header.frame_count then
+        return nil, "Sample index out of range: " .. tostring(sample_index)
+    end
+
+    local f, err = io.open(path, "rb")
+    if not f then
+        return nil, "Cannot open file: " .. tostring(err)
+    end
+
+    local offset = K_HEADER_BYTES + sample_index * header.sample_bytes
+    if not f:seek("set", offset) then
+        f:close()
+        return nil, "Could not seek to sample " .. tostring(sample_index)
+    end
+
+    local data = f:read(header.sample_bytes)
+    f:close()
+
+    if not data or #data ~= header.sample_bytes then
+        return nil, "Could not read sample " .. tostring(sample_index)
+    end
+
+    local points = {}
+    for i = 1, header.particle_count do
+        local base = (i - 1) * header.stride_bytes + 1
+        points[i] = {
+            x = f32le(data, base) or 0.0,
+            y = f32le(data, base + 4) or 0.0,
+            z = f32le(data, base + 8) or 0.0,
+            vx = f32le(data, base + 12) or 0.0,
+            vy = f32le(data, base + 16) or 0.0,
+            vz = f32le(data, base + 20) or 0.0,
+            visibility = f32le(data, base + 24) or 0.0,
+            scalar0 = f32le(data, base + 28) or 0.0,
+        }
+    end
+    return points, nil
+end
+
+local CachedPath = nil
+local CachedHeader = nil
+local CachedError = nil
+
+local CachedPairPath = nil
+local CachedSample0Index = nil
+local CachedSample1Index = nil
+local CachedSample0 = nil
+local CachedSample1 = nil
+
+local CachedRefPath = nil
+local CachedRefX = nil
+local CachedRefY = nil
+local CachedRefMinX = 0.0
+local CachedRefMaxX = 0.0
+local CachedRefMinY = 0.0
+local CachedRefMaxY = 0.0
+local CachedRefValid = false
+
+local function clear_sample_cache()
+    CachedPairPath = nil
+    CachedSample0Index = nil
+    CachedSample1Index = nil
+    CachedSample0 = nil
+    CachedSample1 = nil
+end
+
+local function clear_reference_cache()
+    CachedRefPath = nil
+    CachedRefX = nil
+    CachedRefY = nil
+    CachedRefValid = false
+end
+
+local function build_reference_cache(path, sample0)
+    CachedRefPath = path
+    CachedRefX = {}
+    CachedRefY = {}
+
+    local min_x = math.huge
+    local max_x = -math.huge
+    local min_y = math.huge
+    local max_y = -math.huge
+
+    for i = 1, #sample0 do
+        local p = sample0[i]
+        CachedRefX[i] = p.x
+        CachedRefY[i] = p.y
+        if p.x < min_x then min_x = p.x end
+        if p.x > max_x then max_x = p.x end
+        if p.y < min_y then min_y = p.y end
+        if p.y > max_y then max_y = p.y end
+    end
+
+    CachedRefMinX = min_x
+    CachedRefMaxX = max_x
+    CachedRefMinY = min_y
+    CachedRefMaxY = max_y
+    CachedRefValid =
+        max_x > min_x + 1.0e-9 and
+        max_y > min_y + 1.0e-9
+end
+
+local function load_file_if_needed(path)
+    if path == CachedPath then
+        return CachedHeader, CachedError
+    end
+
+    clear_sample_cache()
+    clear_reference_cache()
+
+    local header, err = read_header(path)
+    CachedPath = path
+    CachedHeader = header
+    CachedError = err
+
+    if err then
+        print("Fusion Handoff FLD1 ERROR: " .. tostring(err))
+        return nil, err
+    end
+
+    local sample0, sample_err = read_sample(path, header, 0)
+    if sample_err then
+        CachedError = sample_err
+        print("Fusion Handoff FLD1 ERROR: " .. tostring(sample_err))
+        return nil, sample_err
+    end
+
+    CachedPairPath = path
+    CachedSample0Index = 0
+    CachedSample0 = sample0
+    build_reference_cache(path, sample0)
+
+    print("========================================")
+    print("Fusion Handoff: FLD1 loaded")
+    print("particle_count = " .. tostring(header.particle_count))
+    print("frame_count    = " .. tostring(header.frame_count))
+    print("sample_rate    = " .. tostring(header.sample_rate))
+    print("stride_floats  = " .. tostring(header.stride_floats))
+    print("========================================")
+
+    return header, nil
+end
+
+local function get_sample_pair(path, header, index0, index1)
+    local sample0 = nil
+
+    if CachedPairPath == path and CachedSample0Index == index0 and CachedSample0 then
+        sample0 = CachedSample0
+    elseif CachedPairPath == path and CachedSample1Index == index0 and CachedSample1 then
+        sample0 = CachedSample1
+    else
+        local err = nil
+        sample0, err = read_sample(path, header, index0)
+        if err then return nil, nil, err end
+    end
+
+    local sample1 = nil
+    if index1 == index0 then
+        sample1 = sample0
+    elseif CachedPairPath == path and CachedSample1Index == index1 and CachedSample1 then
+        sample1 = CachedSample1
+    else
+        local err = nil
+        sample1, err = read_sample(path, header, index1)
+        if err then return nil, nil, err end
+    end
+
+    CachedPairPath = path
+    CachedSample0Index = index0
+    CachedSample1Index = index1
+    CachedSample0 = sample0
+    CachedSample1 = sample1
+    return sample0, sample1, nil
+end
+
+local function reference_uv(i)
+    if not CachedRefValid or not CachedRefX or not CachedRefY then
+        return 0.5, 0.5, false
+    end
+
+    local x = CachedRefX[i]
+    local y = CachedRefY[i]
+    if x == nil or y == nil then
+        return 0.5, 0.5, false
+    end
+
+    local u = (x - CachedRefMinX) / (CachedRefMaxX - CachedRefMinX)
+    local v = (y - CachedRefMinY) / (CachedRefMaxY - CachedRefMinY)
+    return clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0), true
+end
+
+local function hermite_state(a, b, t)
+    local t2 = t * t
+    local t3 = t2 * t
+
+    local h00 =  2.0 * t3 - 3.0 * t2 + 1.0
+    local h10 =        t3 - 2.0 * t2 + t
+    local h01 = -2.0 * t3 + 3.0 * t2
+    local h11 =        t3 -       t2
+
+    local dh00 =  6.0 * t2 - 6.0 * t
+    local dh10 =  3.0 * t2 - 4.0 * t + 1.0
+    local dh01 = -6.0 * t2 + 6.0 * t
+    local dh11 =  3.0 * t2 - 2.0 * t
+
+    local x = h00 * a.x + h10 * a.vx + h01 * b.x + h11 * b.vx
+    local y = h00 * a.y + h10 * a.vy + h01 * b.y + h11 * b.vy
+    local z = h00 * a.z + h10 * a.vz + h01 * b.z + h11 * b.vz
+
+    local vx = dh00 * a.x + dh10 * a.vx + dh01 * b.x + dh11 * b.vx
+    local vy = dh00 * a.y + dh10 * a.vy + dh01 * b.y + dh11 * b.vy
+    local vz = dh00 * a.z + dh10 * a.vz + dh01 * b.z + dh11 * b.vz
+
+    local visibility = a.visibility + (b.visibility - a.visibility) * t
+    local scalar0 = a.scalar0 + (b.scalar0 - a.scalar0) * t
+    return x, y, z, vx, vy, vz, visibility, scalar0
+end
+
+local function rotate_xyz(x, y, z, view)
+    local y1 = y * view.cx - z * view.sx
+    local z1 = y * view.sx + z * view.cx
+    local x1 = x
+
+    local x2 = x1 * view.cy + z1 * view.sy
+    local z2 = -x1 * view.sy + z1 * view.cy
+    local y2 = y1
+
+    local x3 = x2 * view.cz - y2 * view.sz
+    local y3 = x2 * view.sz + y2 * view.cz
+    return x3, y3, z2
+end
+
+local function transform_world_point(x, y, z, view)
+    x = x - view.pivot_x
+    y = y - view.pivot_y
+    z = z - view.pivot_z
+
+    x, y, z = rotate_xyz(x, y, z, view)
+
+    x = x + view.pivot_x + view.object_pos_x
+    y = y + view.pivot_y + view.object_pos_y
+    z = z + view.pivot_z + view.object_pos_z
+    return x, y, z
+end
+
+local function perspective_factor(world_z, view)
+    local camera_z = world_z - view.dolly
+    local depth = K_CAMERA_DISTANCE + camera_z
+
+    if view.perspective > 0.000001 then
+        if depth <= 0.05 then
+            return nil, camera_z
+        end
+
+        local projection = K_CAMERA_DISTANCE / depth
+        local factor =
+            (1.0 - view.perspective) +
+            view.perspective * projection
+        return clamp(factor, 0.01, 80.0), camera_z
+    end
+
+    return 1.0, camera_z
+end
+
+local function project_world_point(x, y, z, view)
+    local tx, ty, tz = transform_world_point(x, y, z, view)
+    local pf, camera_z = perspective_factor(tz, view)
+    if not pf then return nil end
+
+    local sx = view.screen_center_x + view.screen_offset_x + tx * view.screen_scale * pf
+    local sy = view.screen_center_y + view.screen_offset_y + ty * view.screen_scale * pf
+    return sx, sy, pf, camera_z, tx, ty, tz
+end
+
+local function build_view(req, width, height)
+    local rx = get_number(InRotX, req, 0.0) * K_PI / 180.0
+    local ry = get_number(InRotY, req, 0.0) * K_PI / 180.0
+    local rz = get_number(InRotZ, req, 0.0) * K_PI / 180.0
+    local view_scale = clamp(get_number(InViewScale, req, 180.0) / 100.0, 0.10, 8.0)
+
+    return {
+        object_pos_x = get_number(InObjectPosX, req, 0.0),
+        object_pos_y = get_number(InObjectPosY, req, 0.0),
+        object_pos_z = get_number(InObjectPosZ, req, 0.0),
+
+        pivot_x = get_number(InPivotX, req, 0.0),
+        pivot_y = get_number(InPivotY, req, 0.0),
+        pivot_z = get_number(InPivotZ, req, 0.0),
+
+        cx = math.cos(rx), sx = math.sin(rx),
+        cy = math.cos(ry), sy = math.sin(ry),
+        cz = math.cos(rz), sz = math.sin(rz),
+
+        perspective = clamp(get_number(InPerspective, req, 100.0) / 100.0, 0.0, 1.0),
+        dolly = clamp(get_number(InDolly, req, 0.0), -20.0, 20.0),
+        screen_scale = math.min(width, height) * 0.085 * view_scale,
+        screen_center_x = width * 0.5,
+        screen_center_y = height * 0.5,
+        screen_offset_x = width * clamp(get_number(InScreenOffsetX, req, 0.0) / 100.0, -1.0, 1.0),
+        screen_offset_y = height * clamp(get_number(InScreenOffsetY, req, 0.0) / 100.0, -1.0, 1.0),
+    }
+end
+
+local function sample_image_rgba(source, u, v, pixel)
+    if not source or not source.Width or not source.Height then
+        return 1.0, 1.0, 1.0, 1.0, false
+    end
+    if source.Width < 1 or source.Height < 1 then
+        return 1.0, 1.0, 1.0, 1.0, false
+    end
+
+    local x = clamp(u, 0.0, 1.0) * (source.Width - 1)
+    local y = clamp(v, 0.0, 1.0) * (source.Height - 1)
+    source:SamplePixelB(x, y, pixel)
+    return pixel.R or 0.0, pixel.G or 0.0, pixel.B or 0.0, pixel.A or 0.0, true
+end
+
+local function composite_pixel(img, x, y, r, g, b, a, scratch)
+    if a <= 0.0 then return end
+
+    if a >= 0.999999 then
+        img:GetPixel(x, y, scratch)
+        scratch.R = math.max(scratch.R or 0.0, r)
+        scratch.G = math.max(scratch.G or 0.0, g)
+        scratch.B = math.max(scratch.B or 0.0, b)
+        scratch.A = math.max(scratch.A or 0.0, 1.0)
+        img:SetPixel(x, y, scratch)
+        return
+    end
+
+    img:GetPixel(x, y, scratch)
+    local inv = 1.0 - a
+    scratch.R = r * a + (scratch.R or 0.0) * inv
+    scratch.G = g * a + (scratch.G or 0.0) * inv
+    scratch.B = b * a + (scratch.B or 0.0) * inv
+    scratch.A = a + (scratch.A or 0.0) * inv
+    img:SetPixel(x, y, scratch)
+end
+
+local function raster_circle(img, width, height, cx, cy, radius, r, g, b, a, scratch)
+    radius = clamp(radius, 0.5, 128.0)
+    local ir = math.max(1, math.floor(radius + 0.5))
+    local r2 = radius * radius
+
+    for dy = -ir, ir do
+        local py = cy + dy
+        if py >= 0 and py < height then
+            for dx = -ir, ir do
+                if dx * dx + dy * dy <= r2 then
+                    local px = cx + dx
+                    if px >= 0 and px < width then
+                        composite_pixel(img, px, py, r, g, b, a, scratch)
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function raster_line(img, width, height, x0, y0, x1, y1, r, g, b, a, scratch)
+    local dx = math.abs(x1 - x0)
+    local sx = (x0 < x1) and 1 or -1
+    local dy = -math.abs(y1 - y0)
+    local sy = (y0 < y1) and 1 or -1
+    local err = dx + dy
+
+    while true do
+        if x0 >= 0 and x0 < width and y0 >= 0 and y0 < height then
+            composite_pixel(img, x0, y0, r, g, b, a, scratch)
+        end
+        if x0 == x1 and y0 == y1 then break end
+
+        local e2 = 2 * err
+        if e2 >= dy then
+            err = err + dy
+            x0 = x0 + sx
+        end
+        if e2 <= dx then
+            err = err + dx
+            y0 = y0 + sy
+        end
+    end
+end
+
+local function raster_sprite(img, width, height, source, cx, cy, long_side, brightness, opacity, sample_pixel, scratch)
+    if not source or not source.Width or not source.Height then return end
+    if source.Width < 1 or source.Height < 1 then return end
+
+    long_side = math.max(1, math.floor(long_side + 0.5))
+
+    local draw_w
+    local draw_h
+    if source.Width >= source.Height then
+        draw_w = long_side
+        draw_h = math.max(1, round_int(long_side * source.Height / source.Width))
+    else
+        draw_h = long_side
+        draw_w = math.max(1, round_int(long_side * source.Width / source.Height))
+    end
+
+    local left = cx - math.floor(draw_w * 0.5)
+    local bottom = cy - math.floor(draw_h * 0.5)
+
+    for oy = 0, draw_h - 1 do
+        local py = bottom + oy
+        if py >= 0 and py < height then
+            local sy = (draw_h > 1) and (oy / (draw_h - 1)) * (source.Height - 1) or 0.0
+            for ox = 0, draw_w - 1 do
+                local px = left + ox
+                if px >= 0 and px < width then
+                    local sx = (draw_w > 1) and (ox / (draw_w - 1)) * (source.Width - 1) or 0.0
+                    source:SamplePixelB(sx, sy, sample_pixel)
+                    local sa = clamp((sample_pixel.A or 0.0) * opacity, 0.0, 1.0)
+                    if sa > 0.0 then
+                        composite_pixel(
+                            img, px, py,
+                            clamp((sample_pixel.R or 0.0) * brightness, 0.0, 1.0),
+                            clamp((sample_pixel.G or 0.0) * brightness, 0.0, 1.0),
+                            clamp((sample_pixel.B or 0.0) * brightness, 0.0, 1.0),
+                            sa,
+                            scratch
+                        )
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function apply_global_opacity(img, width, height, opacity, scratch)
+    opacity = clamp(opacity, 0.0, 1.0)
+    if opacity >= 0.999999 then return end
+
+    for y = 0, height - 1 do
+        for x = 0, width - 1 do
+            img:GetPixel(x, y, scratch)
+            scratch.R = (scratch.R or 0.0) * opacity
+            scratch.G = (scratch.G or 0.0) * opacity
+            scratch.B = (scratch.B or 0.0) * opacity
+            scratch.A = (scratch.A or 0.0) * opacity
+            img:SetPixel(x, y, scratch)
+        end
+    end
+end
+
+function Create()
+    InFile = self:AddInput("FLD1 File", "FLD1File", {
+        LINKID_DataType = "Text",
+        INPID_InputControl = "FileControl",
+        FC_IsSaver = false,
+        FC_PathBrowse = false,
+        FC_ClipBrowse = false,
+        FCS_FilterString = "FLD1 Files (*.fld1)|*.fld1|All Files (*.*)|*.*|",
+    })
+
+    InRenderMode = self:AddInput("Render Mode", "RenderMode", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0,
+        INP_Integer = true,
+        { CCS_AddString = "Dot" },
+        { CCS_AddString = "Sprite" },
+        { CCS_AddString = "Image Dots" },
+    })
+
+    InSamplesPerSecond = self:AddInput("Samples / Second", "SamplesPerSecond", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 12.0, INP_MinScale = 0.0, INP_MaxScale = 60.0,
+        INP_MinAllowed = -1000.0, INP_MaxAllowed = 1000.0,
+    })
+    InSampleOffset = self:AddInput("Sample Offset", "SampleOffset", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = 0.0, INP_MaxScale = 48.0,
+        INP_MinAllowed = -100000.0, INP_MaxAllowed = 100000.0,
+    })
+
+    InObjectPosX = self:AddInput("Object Position X", "ObjectPositionX", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -20.0, INP_MaxScale = 20.0,
+        INP_MinAllowed = -1000.0, INP_MaxAllowed = 1000.0,
+    })
+    InObjectPosY = self:AddInput("Object Position Y", "ObjectPositionY", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -20.0, INP_MaxScale = 20.0,
+        INP_MinAllowed = -1000.0, INP_MaxAllowed = 1000.0,
+    })
+    InObjectPosZ = self:AddInput("Object Position Z", "ObjectPositionZ", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -20.0, INP_MaxScale = 20.0,
+        INP_MinAllowed = -1000.0, INP_MaxAllowed = 1000.0,
+    })
+
+    InPivotX = self:AddInput("Object Pivot X", "PivotX", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -20.0, INP_MaxScale = 20.0,
+        INP_MinAllowed = -1000.0, INP_MaxAllowed = 1000.0,
+    })
+    InPivotY = self:AddInput("Object Pivot Y", "PivotY", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -20.0, INP_MaxScale = 20.0,
+        INP_MinAllowed = -1000.0, INP_MaxAllowed = 1000.0,
+    })
+    InPivotZ = self:AddInput("Object Pivot Z", "PivotZ", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -20.0, INP_MaxScale = 20.0,
+        INP_MinAllowed = -1000.0, INP_MaxAllowed = 1000.0,
+    })
+
+    InRotX = self:AddInput("Object Rotation X", "RotationX", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -180.0, INP_MaxScale = 180.0,
+        INP_MinAllowed = -3600.0, INP_MaxAllowed = 3600.0,
+    })
+    InRotY = self:AddInput("Object Rotation Y", "RotationY", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -180.0, INP_MaxScale = 180.0,
+        INP_MinAllowed = -3600.0, INP_MaxAllowed = 3600.0,
+    })
+    InRotZ = self:AddInput("Object Rotation Z", "RotationZ", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -180.0, INP_MaxScale = 180.0,
+        INP_MinAllowed = -3600.0, INP_MaxAllowed = 3600.0,
+    })
+
+    InPerspective = self:AddInput("Perspective", "Perspective", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 100.0, INP_MinScale = 0.0, INP_MaxScale = 100.0,
+        INP_MinAllowed = 0.0, INP_MaxAllowed = 100.0,
+    })
+    InViewScale = self:AddInput("View Scale", "ViewScale", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 180.0, INP_MinScale = 25.0, INP_MaxScale = 400.0,
+        INP_MinAllowed = 10.0, INP_MaxAllowed = 800.0,
+    })
+    InDolly = self:AddInput("Dolly", "Dolly", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -12.0, INP_MaxScale = 12.0,
+        INP_MinAllowed = -20.0, INP_MaxAllowed = 20.0,
+    })
+    InScreenOffsetX = self:AddInput("Screen Offset X", "ScreenOffsetX", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -50.0, INP_MaxScale = 50.0,
+        INP_MinAllowed = -100.0, INP_MaxAllowed = 100.0,
+    })
+    InScreenOffsetY = self:AddInput("Screen Offset Y", "ScreenOffsetY", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -50.0, INP_MaxScale = 50.0,
+        INP_MinAllowed = -100.0, INP_MaxAllowed = 100.0,
+    })
+
+    InDensity = self:AddInput("Density", "Density", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 100.0, INP_MinScale = 0.0, INP_MaxScale = 100.0,
+        INP_MinAllowed = 0.0, INP_MaxAllowed = 100.0,
+    })
+
+    InColorR = self:AddInput("Red", "ColorR", {
+        ICS_Name = "Particle Color",
+        LINKID_DataType = "Number", INPID_InputControl = "ColorControl",
+        INP_Default = 1.0, INP_MinScale = 0.0, INP_MaxScale = 1.0,
+        IC_ControlGroup = 31, IC_ControlID = 0,
+    })
+    InColorG = self:AddInput("Green", "ColorG", {
+        LINKID_DataType = "Number", INPID_InputControl = "ColorControl",
+        INP_Default = 1.0, INP_MinScale = 0.0, INP_MaxScale = 1.0,
+        IC_ControlGroup = 31, IC_ControlID = 1,
+    })
+    InColorB = self:AddInput("Blue", "ColorB", {
+        LINKID_DataType = "Number", INPID_InputControl = "ColorControl",
+        INP_Default = 1.0, INP_MinScale = 0.0, INP_MaxScale = 1.0,
+        IC_ControlGroup = 31, IC_ControlID = 2,
+    })
+
+    InParticleSize = self:AddInput("Particle Size", "ParticleSize", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 1.0, INP_MinScale = 0.25, INP_MaxScale = 32.0,
+        INP_MinAllowed = 0.1, INP_MaxAllowed = 128.0,
+    })
+    InSpeedBrightness = self:AddInput("Speed Brightness", "SpeedBrightness", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = 0.0, INP_MaxScale = 100.0,
+        INP_MinAllowed = 0.0, INP_MaxAllowed = 100.0,
+    })
+    InDepthCue = self:AddInput("Depth Cue", "DepthCue", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = 0.0, INP_MaxScale = 100.0,
+        INP_MinAllowed = 0.0, INP_MaxAllowed = 100.0,
+    })
+    InStreak = self:AddInput("Velocity Streak", "VelocityStreak", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = 0.0, INP_MaxScale = 0.15,
+        INP_MinAllowed = 0.0, INP_MaxAllowed = 10.0,
+    })
+    InParticleOpacity = self:AddInput("Particle Opacity", "ParticleOpacity", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 100.0, INP_MinScale = 0.0, INP_MaxScale = 100.0,
+        INP_MinAllowed = 0.0, INP_MaxAllowed = 100.0,
+    })
+    InGlobalOpacity = self:AddInput("Global Opacity", "GlobalOpacity", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 100.0, INP_MinScale = 0.0, INP_MaxScale = 100.0,
+        INP_MinAllowed = 0.0, INP_MaxAllowed = 100.0,
+    })
+
+    InDepthSplit = self:AddInput("View Depth Split", "DepthSplit", {
+        LINKID_DataType = "Number", INPID_InputControl = "ComboControl",
+        INP_Default = 0, INP_Integer = true,
+        { CCS_AddString = "Off" },
+        { CCS_AddString = "Front" },
+        { CCS_AddString = "Back" },
+    })
+    InFocusX = self:AddInput("Focus Position X", "FocusX", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -20.0, INP_MaxScale = 20.0,
+        INP_MinAllowed = -1000.0, INP_MaxAllowed = 1000.0,
+    })
+    InFocusY = self:AddInput("Focus Position Y", "FocusY", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -20.0, INP_MaxScale = 20.0,
+        INP_MinAllowed = -1000.0, INP_MaxAllowed = 1000.0,
+    })
+    InFocusZ = self:AddInput("Focus Position Z", "FocusZ", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.0, INP_MinScale = -20.0, INP_MaxScale = 20.0,
+        INP_MinAllowed = -1000.0, INP_MaxAllowed = 1000.0,
+    })
+
+    InSpriteSource = self:AddInput("Sprite Source", "SpriteSource", {
+        LINKID_DataType = "Image", LINK_Main = 1, INP_Required = false,
+    })
+    InImageSource = self:AddInput("Image Source", "ImageSource", {
+        LINKID_DataType = "Image", LINK_Main = 2, INP_Required = false,
+    })
+    InMaskSource = self:AddInput("Mask Source", "MaskSource", {
+        LINKID_DataType = "Image", LINK_Main = 3, INP_Required = false,
+    })
+
+    InSpriteSize = self:AddInput("Sprite Size", "SpriteSize", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 12.0, INP_MinScale = 1.0, INP_MaxScale = 32.0,
+        INP_MinAllowed = 1.0, INP_MaxAllowed = 64.0,
+    })
+    InMaskGate = self:AddInput("Mask Gate", "MaskGate", {
+        LINKID_DataType = "Number", INPID_InputControl = "ComboControl",
+        INP_Default = 0, INP_Integer = true,
+        { CCS_AddString = "Off" },
+        { CCS_AddString = "Frame 0 XY" },
+    })
+    InMaskThreshold = self:AddInput("Mask Threshold", "MaskThreshold", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 5.0, INP_MinScale = 0.0, INP_MaxScale = 100.0,
+        INP_MinAllowed = 0.0, INP_MaxAllowed = 100.0,
+    })
+    InMaskInvert = self:AddInput("Mask Invert", "MaskInvert", {
+        LINKID_DataType = "Number", INPID_InputControl = "CheckboxControl",
+        INP_Default = 0, INP_Integer = true,
+    })
+end
+
+function Process(req)
+    local realwidth = Width
+    local realheight = Height
+    local width = math.max(1, math.floor(Width / Scale))
+    local height = math.max(1, math.floor(Height / Scale))
+
+    local attrs = {
+        IMG_Document = self.Comp,
+        { IMG_Channel = "Red" },
+        { IMG_Channel = "Green" },
+        { IMG_Channel = "Blue" },
+        { IMG_Channel = "Alpha" },
+        IMG_Width = width,
+        IMG_Height = height,
+        IMG_XScale = XAspect,
+        IMG_YScale = YAspect,
+        IMAT_OriginalWidth = realwidth,
+        IMAT_OriginalHeight = realheight,
+        IMG_Quality = not req:IsQuick(),
+        IMG_MotionBlurQuality = not req:IsNoMotionBlur(),
+    }
+
+    if SourceDepth ~= 0 then attrs.IMG_Depth = SourceDepth end
+
+    local img = Image(attrs)
+    img:Clear()
+
+    local path_value = InFile:GetValue(req)
+    local path = path_value and path_value.Value or ""
+    if not path or path == "" then
+        OutImage:Set(req, img)
+        return
+    end
+
+    path = self.Comp:MapPath(path)
+    local header, file_err = load_file_if_needed(path)
+    if file_err or not header then
+        OutImage:Set(req, img)
+        return
+    end
+
+    local sample_offset = get_number(InSampleOffset, req, 0.0)
+    local samples_per_second = get_number(InSamplesPerSecond, req, 12.0)
+
+    local fps = tonumber(self.Comp:GetPrefs("Comp.FrameFormat.Rate")) or 24.0
+    if fps <= 0.0 then fps = 24.0 end
+
+    local current_frame = tonumber(req.Time) or 0.0
+    local start_frame = tonumber(self.Comp.GlobalStart) or 0.0
+    local timeline_frame = current_frame - start_frame
+    local q = sample_offset + (timeline_frame / fps) * samples_per_second
+
+    local max_q = header.frame_count - 1
+    q = clamp(q, 0.0, max_q)
+
+    local index0
+    local index1
+    local t
+
+    if header.frame_count == 1 then
+        index0 = 0
+        index1 = 0
+        t = 0.0
+    elseif q >= max_q then
+        index0 = header.frame_count - 2
+        index1 = header.frame_count - 1
+        t = 1.0
+    else
+        index0 = math.floor(q)
+        index1 = index0 + 1
+        t = q - index0
+    end
+
+    local sample0, sample1, sample_err = get_sample_pair(path, header, index0, index1)
+    if sample_err or not sample0 or not sample1 then
+        print("Fusion Handoff SAMPLE ERROR: " .. tostring(sample_err))
+        OutImage:Set(req, img)
+        return
+    end
+
+    local view = build_view(req, width, height)
+
+    local density = clamp(get_number(InDensity, req, 100.0) / 100.0, 0.0, 1.0)
+    local base_r = clamp(get_number(InColorR, req, 1.0), 0.0, 1.0)
+    local base_g = clamp(get_number(InColorG, req, 1.0), 0.0, 1.0)
+    local base_b = clamp(get_number(InColorB, req, 1.0), 0.0, 1.0)
+    local particle_size = clamp(get_number(InParticleSize, req, 1.0), 0.1, 128.0)
+    local speed_brightness = clamp(get_number(InSpeedBrightness, req, 0.0) / 100.0, 0.0, 1.0)
+    local depth_cue = clamp(get_number(InDepthCue, req, 0.0) / 100.0, 0.0, 1.0)
+    local streak_q = clamp(get_number(InStreak, req, 0.0), 0.0, 10.0)
+    local particle_opacity = clamp(get_number(InParticleOpacity, req, 100.0) / 100.0, 0.0, 1.0)
+    local global_opacity = clamp(get_number(InGlobalOpacity, req, 100.0) / 100.0, 0.0, 1.0)
+
+    local render_mode = math.floor(get_number(InRenderMode, req, 0.0) + 0.5)
+    local wants_sprite = render_mode == 1
+    local wants_image_dots = render_mode == 2
+
+    local sprite_source = get_optional_image(InSpriteSource, req)
+    local image_source = get_optional_image(InImageSource, req)
+    local mask_source = get_optional_image(InMaskSource, req)
+
+    local sprite_size = clamp(get_number(InSpriteSize, req, 12.0), 1.0, 64.0)
+    local mask_gate = math.floor(get_number(InMaskGate, req, 0.0) + 0.5) == 1
+    local mask_threshold = clamp(get_number(InMaskThreshold, req, 5.0) / 100.0, 0.0, 1.0)
+    local mask_invert = get_number(InMaskInvert, req, 0.0) >= 0.5
+
+    local split_mode = math.floor(get_number(InDepthSplit, req, 0.0) + 0.5)
+    local focus_camera_z = nil
+    if split_mode ~= 0 then
+        local fx = get_number(InFocusX, req, 0.0)
+        local fy = get_number(InFocusY, req, 0.0)
+        local fz = get_number(InFocusZ, req, 0.0)
+        local _, _, focus_world_z = transform_world_point(fx, fy, fz, view)
+        focus_camera_z = focus_world_z - view.dolly
+    end
+
+    local scratch = Pixel({ R = 0.0, G = 0.0, B = 0.0, A = 0.0 })
+    local sample_pixel = Pixel({ R = 0.0, G = 0.0, B = 0.0, A = 0.0 })
+
+    for i = 1, header.particle_count do
+        if pass_density(i - 1, density) then
+            local a = sample0[i]
+            local b = sample1[i]
+
+            local x, y, z, vx, vy, vz, visibility = hermite_state(a, b, t)
+
+            local ref_u, ref_v, has_ref_uv = reference_uv(i)
+            local mask_alpha = 1.0
+
+            if mask_gate and mask_source and has_ref_uv then
+                local _, _, _, ma, ok = sample_image_rgba(mask_source, ref_u, ref_v, sample_pixel)
+                if ok then
+                    mask_alpha = clamp(ma, 0.0, 1.0)
+                    if mask_invert then mask_alpha = 1.0 - mask_alpha end
+                    if mask_alpha < mask_threshold then
+                        visibility = 0.0
+                    end
+                end
+            end
+
+            local draw_r = base_r
+            local draw_g = base_g
+            local draw_b = base_b
+            local image_alpha = 1.0
+
+            if wants_image_dots and image_source and has_ref_uv then
+                local ir, ig, ib, ia, ok = sample_image_rgba(image_source, ref_u, ref_v, sample_pixel)
+                if ok then
+                    draw_r = clamp(ir, 0.0, 1.0)
+                    draw_g = clamp(ig, 0.0, 1.0)
+                    draw_b = clamp(ib, 0.0, 1.0)
+                    image_alpha = clamp(ia, 0.0, 1.0)
+                end
+            end
+
+            visibility = clamp(visibility * mask_alpha * image_alpha, 0.0, 1.0)
+
+            if visibility > 0.01 and particle_opacity > 0.0 then
+                local screen_x, screen_y, pf, camera_z = project_world_point(x, y, z, view)
+
+                if screen_x then
+                    local passes_split = true
+                    if focus_camera_z then
+                        if split_mode == 1 then
+                            passes_split = camera_z <= focus_camera_z
+                        elseif split_mode == 2 then
+                            passes_split = camera_z >= focus_camera_z
+                        end
+                    end
+
+                    if passes_split then
+                        local speed = math.sqrt(vx * vx + vy * vy + vz * vz)
+                        local speed_scalar = clamp(speed * 0.85, 0.0, 1.0)
+                        local depth_scalar = clamp(0.90 - camera_z * 0.10, 0.42, 1.15)
+
+                        local brightness =
+                            (1.0 - speed_brightness) + speed_brightness * speed_scalar
+                        brightness = brightness * ((1.0 - depth_cue) + depth_cue * depth_scalar)
+                        brightness = clamp(brightness, 0.0, 1.0)
+
+                        local px = round_int(screen_x)
+                        local py = round_int(screen_y)
+                        local opacity = visibility * particle_opacity
+
+                        if wants_sprite and sprite_source then
+                            local long_side = math.max(1.0, sprite_size * pf)
+                            raster_sprite(
+                                img, width, height, sprite_source,
+                                px, py, long_side,
+                                brightness, opacity,
+                                sample_pixel, scratch
+                            )
+                        else
+                            if streak_q > 0.000001 then
+                                local tx = x - vx * streak_q
+                                local ty = y - vy * streak_q
+                                local tz = z - vz * streak_q
+                                local tail_x, tail_y = project_world_point(tx, ty, tz, view)
+
+                                if tail_x then
+                                    raster_line(
+                                        img, width, height,
+                                        round_int(tail_x), round_int(tail_y), px, py,
+                                        clamp(draw_r * brightness * 0.42, 0.0, 1.0),
+                                        clamp(draw_g * brightness * 0.42, 0.0, 1.0),
+                                        clamp(draw_b * brightness * 0.42, 0.0, 1.0),
+                                        opacity,
+                                        scratch
+                                    )
+                                end
+                            end
+
+                            raster_circle(
+                                img, width, height,
+                                px, py,
+                                particle_size * pf,
+                                clamp(draw_r * brightness, 0.0, 1.0),
+                                clamp(draw_g * brightness, 0.0, 1.0),
+                                clamp(draw_b * brightness, 0.0, 1.0),
+                                opacity,
+                                scratch
+                            )
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    apply_global_opacity(img, width, height, global_opacity, scratch)
+    OutImage:Set(req, img)
+end
