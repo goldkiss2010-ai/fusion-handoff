@@ -46,20 +46,21 @@ Run this after replacing the Fuse. For changes to `FuRegisterClass(...)`, fully 
 
 ## E. Sprite
 
-- [ ] Connect a small RGBA image to Sprite Source.
+- [ ] Connect exactly one small RGBA image to `Source Image`.
 - [ ] Render Mode = Sprite stamps the image at particle positions.
 - [ ] Sprite alpha is respected.
 - [ ] Sprite Size changes the long side.
 - [ ] Sprite size follows perspective.
-- [ ] Disconnecting Sprite Source does not crash; output simply has no sprites.
+- [ ] Disconnecting `Source Image` does not crash; Sprite mode returns transparent output rather than silently falling back to dots.
 
 ## F. Image Dots
 
-- [ ] Connect a color image to Image Source.
+- [ ] Connect exactly one color image to the same `Source Image` connector.
 - [ ] Render Mode = Image Dots colors particles from the image.
 - [ ] Mapping stays attached to particle IDs while the field evolves.
 - [ ] Image alpha suppresses/fades corresponding particles.
 - [ ] Image orientation is visually correct; if vertically flipped, only the Fusion frame-0 V mapping should be changed.
+- [ ] Disconnecting `Source Image` makes Image Dots transparent rather than silently falling back to Particle Color.
 
 ## G. Mask Gate
 
@@ -90,6 +91,6 @@ Run this after replacing the Fuse. For changes to `FuRegisterClass(...)`, fully 
 
 - [ ] Empty FLD1 path returns transparent output.
 - [ ] Invalid/non-FLD1 file reports a Console error but does not crash Resolve.
-- [ ] Missing optional Sprite/Image/Mask inputs do not crash.
+- [ ] Missing optional Source Image / Mask Source inputs do not crash.
 - [ ] Seeking outside cache range clamps safely.
 - [ ] Japanese/non-ASCII FLD1 path still opens.
