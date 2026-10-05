@@ -26,7 +26,7 @@ This repository is intentionally a thin host adapter. It may later be merged wit
 
 The Fuse is still experimental. The first priority is semantic correctness and cross-DCC behavior; optimization comes after the feature path is verified.
 
-Fusion Handoff is registered as `CT_Tool`, not `CT_SourceTool`: it still creates its own RGBA output from FLD1, but Sprite/Image Dots and Mask Gate consume real upstream image branches. This avoids source-tool scheduling ambiguity for optional image inputs.
+Fusion Handoff remains a `CT_SourceTool` because FLD1 owns the generated output frame and Fusion supplies the source-style frame-format controls. Sprite/Image Dots and Mask Gate are optional upstream image branches; the Fuse marks each branch required only while the corresponding mode is active so Fusion schedules the dependency explicitly.
 
 ## Install
 
