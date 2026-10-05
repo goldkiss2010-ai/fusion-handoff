@@ -16,6 +16,7 @@ FuRegisterClass("FusionHandoff", CT_SourceTool, {
     REGS_OpIconString = "FH",
     REGS_OpDescription = "FLD1 particle state renderer",
 
+    REG_OpNoMask = true,
     REG_NoObjMatCtrls = true,
     REG_NoMotionBlurCtrls = true,
 
@@ -808,7 +809,7 @@ function Create()
         INP_SendRequest = true,
         INP_ForceNotify = true,
     })
-    InMaskSource = self:AddInput("Mask Source", "MaskSource", {
+    InMaskSource = self:AddInput("Particle Mask Image", "MaskSource", {
         LINKID_DataType = "Image",
         LINK_Main = 2,
         INP_Required = false,
