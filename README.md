@@ -20,7 +20,8 @@ This repository is intentionally a thin host adapter. It may later be merged wit
 - velocity streaks
 - particle and global opacity
 - Dot, Sprite, and Image Dots render modes
-- frame-0 XY mask gate
+- one shared `Source Image` connector: Sprite stamps it per particle; Image Dots samples its frame-0 XY color/alpha
+- separate frame-0 XY `Mask Source` gate
 - View Depth Split: Off / Front / Back around a world-space focus position
 
 The Fuse is still experimental. The first priority is semantic correctness and cross-DCC behavior; optimization comes after the feature path is verified.
@@ -30,6 +31,8 @@ The Fuse is still experimental. The first priority is semantic correctness and c
 Copy `Fuses/FusionHandoff.fuse` into a Fusion/Resolve Fuse search directory, then restart Resolve after changes to `FuRegisterClass(...)` registration flags. A normal Fuse reload is usually enough for `Process()` edits, but registration metadata such as `REG_TimeVariant` may require a full Resolve restart.
 
 Add **Fusion Handoff** from `Fuses > FLD1`, select an `.fld1` cache, and view the node or connect it downstream.
+
+For image-driven modes, connect exactly one image to `Source Image`: `Render Mode = Sprite` stamps that image at every particle, while `Render Mode = Image Dots` samples its color/alpha using stable frame-0 XY particle mapping. `Mask Source` is a separate optional input used only by `Mask Gate`. Image-driven modes intentionally render transparent when `Source Image` is missing, so a wrong connection is not silently mistaken for ordinary dots.
 
 ## FLD1 time contract
 
