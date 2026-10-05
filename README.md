@@ -10,6 +10,22 @@ The producer computes **what the particles are doing**. Fusion keeps control of 
 
 Fusion Handoff is the Fusion / DaVinci Resolve implementation of the [DCC Handoff](https://github.com/goldkiss2010-ai/dcc-handoff) architecture. [AE Handoff](https://github.com/goldkiss2010-ai/ae-handoff) reads the same FLD1 state contract in After Effects.
 
+## Download
+
+Latest experimental preview: **Fusion Handoff 0.1**
+
+- [Download FusionHandoff.fuse](https://github.com/goldkiss2010-ai/fusion-handoff/releases/download/v0.1.0-preview.1/FusionHandoff.fuse) — the Fusion / DaVinci Resolve adapter
+- [Download FLD1 Asset Pack v01](https://github.com/goldkiss2010-ai/fusion-handoff/releases/download/v0.1.0-preview.1/FLD1_Asset_Pack_v01.zip) — host-independent sample particle fields
+- [Release notes](https://github.com/goldkiss2010-ai/fusion-handoff/releases/tag/v0.1.0-preview.1)
+
+The Fuse is a single deployable file. To try it, copy `FusionHandoff.fuse` into a Fusion / Resolve Fuse search directory, restart Resolve, then add **Fusion Handoff** from `Fuses > FLD1`.
+
+The Asset Pack contains five 20K-particle fields and a 1M-particle Vortex Ring. It is the same FLD1 sample-data bundle distributed with AE Handoff; the particle caches themselves are not host-specific.
+
+No Python runtime is required to play an existing FLD1 cache.
+
+See [Installation](docs/INSTALLATION.md) for the full installation notes.
+
 ## Status
 
 Experimental, but the complete first rendering path is working.
@@ -25,16 +41,6 @@ Verified development path includes:
 - velocity streak
 - density, color, size, opacity, speed brightness, depth cue
 - View Depth Split / Focus Depth
-
-The current implementation is a self-contained Fuse:
-
-```text
-Fuses/FusionHandoff.fuse
-```
-
-No Python runtime is required to play an existing FLD1 cache.
-
-For testing, the host-independent [FLD1 Asset Pack v01](https://github.com/goldkiss2010-ai/ae-handoff/releases/download/v1.15-preview.1/FLD1_Asset_Pack_v01.zip) contains five 20K fields and a 1M-particle Vortex Ring. The same files are usable by AE Handoff and Fusion Handoff.
 
 ## Architecture
 
@@ -68,13 +74,7 @@ That is intentional. A million-particle cache remains a cache plus one renderer 
 
 ## Install
 
-Copy:
-
-```text
-Fuses/FusionHandoff.fuse
-```
-
-into a Fusion / Resolve Fuse search directory, then restart Resolve.
+Download [FusionHandoff.fuse](https://github.com/goldkiss2010-ai/fusion-handoff/releases/download/v0.1.0-preview.1/FusionHandoff.fuse), copy it into a Fusion / Resolve Fuse search directory, then restart Resolve.
 
 Add **Fusion Handoff** from:
 
