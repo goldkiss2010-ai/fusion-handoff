@@ -62,15 +62,7 @@ Run this after replacing the Fuse. For changes to `FuRegisterClass(...)`, fully 
 - [ ] Image orientation is visually correct; if vertically flipped, only the Fusion frame-0 V mapping should be changed.
 - [ ] Disconnecting `Source Image` makes Image Dots transparent rather than silently falling back to Particle Color.
 
-## G. Mask Gate
-
-- [ ] Connect a grayscale/alpha image to Mask Source.
-- [ ] Mask Gate = Frame 0 XY filters stable particle IDs.
-- [ ] Mask Threshold changes membership.
-- [ ] Mask Invert reverses the gate.
-- [ ] Particle membership does not crawl as the FLD1 animation moves.
-
-## H. View Depth Split
+## G. View Depth Split
 
 - [ ] Set View Depth Split = Front and note only particles nearer than the focus plane remain.
 - [ ] Set View Depth Split = Back and verify the complementary side remains.
@@ -79,7 +71,7 @@ Run this after replacing the Fuse. For changes to `FuRegisterClass(...)`, fully 
 - [ ] Rotate the particle view: the split plane follows the current view automatically.
 - [ ] Animate Focus Position Z and verify the split plane moves through the field.
 
-## I. Scale test
+## H. Scale test
 
 - [ ] 20K cache: normal interactive behavior.
 - [ ] 100K cache: no correctness regression.
@@ -87,10 +79,10 @@ Run this after replacing the Fuse. For changes to `FuRegisterClass(...)`, fully 
 - [ ] 1M cache: Dot mode loads and plays/scrubs without crash.
 - [ ] Repeat 1M at 3840x2160 / 60 fps and note actual behavior; do not compare performance against AE unless resolution, fps, particle size, streak, opacity, and viewer/cache state match.
 
-## J. Failure behavior
+## I. Failure behavior
 
 - [ ] Empty FLD1 path returns transparent output.
 - [ ] Invalid/non-FLD1 file reports a Console error but does not crash Resolve.
-- [ ] Missing optional Source Image / Mask Source inputs do not crash.
+- [ ] Missing optional Source Image / Source Image inputs do not crash.
 - [ ] Seeking outside cache range clamps safely.
 - [ ] Japanese/non-ASCII FLD1 path still opens.
