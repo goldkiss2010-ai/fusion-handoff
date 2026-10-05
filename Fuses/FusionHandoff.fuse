@@ -619,6 +619,13 @@ local function apply_global_opacity(img, width, height, opacity, scratch)
 end
 
 function Create()
+    -- CT_SourceTool supplied OutImage implicitly. CT_Tool does not, so declare
+    -- the image output explicitly.
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
     InFile = self:AddInput("FLD1 File", "FLD1File", {
         LINKID_DataType = "Text",
         INPID_InputControl = "FileControl",
