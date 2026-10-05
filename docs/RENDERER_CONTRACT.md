@@ -79,12 +79,15 @@ Image Dots samples RGBA from the image. Sampled RGB becomes particle color and s
 
 View Depth Split is presentation-only and does not modify FLD1.
 
-A focus point is specified in the same world coordinate system as FLD1 positions. Transform the focus point through the same object/view transform as particles. Classification is performed in camera depth before perspective projection:
+The split plane is always parallel to the image/sensor plane. It has one degree of freedom only: `Focus Depth`, expressed directly as camera-space Z. Particles are transformed normally, then classified by camera depth before perspective projection:
 
 ```text
+focus_camera_z = Focus Depth
 Front: particle_camera_z <= focus_camera_z
 Back:  particle_camera_z >= focus_camera_z
 ```
+
+There is no focus X/Y position. Changing Focus Depth slides the plane only along the viewing axis.
 
 Two Handoff nodes/layers reading the same FLD1 can therefore bracket an ordinary 2D DCC object:
 
