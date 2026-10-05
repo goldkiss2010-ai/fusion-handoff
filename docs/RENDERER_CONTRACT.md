@@ -1,6 +1,6 @@
 # Renderer contract
 
-This document separates the Handoff rendering semantics from Fusion-specific API details so the implementation can later be merged or shared with AE Handoff without making FLD1 host-specific.
+This document separates the Handoff rendering semantics from Fusion-specific API details. It is the Fusion-side expression of the cross-host model documented by [DCC Handoff](https://github.com/goldkiss2010-ai/dcc-handoff), while FLD1 remains host-independent.
 
 ## 1. State boundary
 
