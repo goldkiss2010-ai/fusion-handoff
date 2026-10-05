@@ -26,6 +26,8 @@ This repository is intentionally a thin host adapter. It may later be merged wit
 
 The Fuse is still experimental. The first priority is semantic correctness and cross-DCC behavior; optimization comes after the feature path is verified.
 
+Fusion Handoff is registered as `CT_Tool`, not `CT_SourceTool`: it still creates its own RGBA output from FLD1, but Sprite/Image Dots and Mask Gate consume real upstream image branches. This avoids source-tool scheduling ambiguity for optional image inputs.
+
 ## Install
 
 Copy `Fuses/FusionHandoff.fuse` into a Fusion/Resolve Fuse search directory, then restart Resolve after changes to `FuRegisterClass(...)` registration flags. A normal Fuse reload is usually enough for `Process()` edits, but registration metadata such as `REG_TimeVariant` may require a full Resolve restart.
