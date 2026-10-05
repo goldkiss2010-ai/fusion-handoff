@@ -21,12 +21,11 @@ This repository is intentionally a thin host adapter. It may later be merged wit
 - particle and global opacity
 - Dot, Sprite, and Image Dots render modes
 - one shared `Source Image` connector: Sprite stamps it per particle; Image Dots samples its frame-0 XY color/alpha
-- separate frame-0 XY `Mask Source` gate
-- View Depth Split: Off / Front / Back around a world-space focus position
+- View Depth Split: Off / Front / Back using one camera-space `Focus Depth`; the split plane stays parallel to the image/sensor plane
 
 The Fuse is still experimental. The first priority is semantic correctness and cross-DCC behavior; optimization comes after the feature path is verified.
 
-Fusion Handoff remains a `CT_SourceTool` because FLD1 owns the generated output frame and Fusion supplies the source-style frame-format controls. Sprite and Image Dots share one optional upstream `Source Image` branch.
+Fusion Handoff remains a `CT_SourceTool` because FLD1 owns the generated output frame and Fusion supplies the source-style frame-format controls. Sprite and Image Dots share one optional upstream `Source Image` branch. There is no separate particle-mask image input.
 
 ## Install
 
